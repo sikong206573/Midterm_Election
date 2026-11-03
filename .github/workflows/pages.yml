@@ -1,33 +1,67 @@
-name: Publish election atlas
+name: Test and publish election atlas
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 permissions:
   contents: read
-  pages: write
-  id-token: write
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: atlas-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
         with:
-          enablement: true
-      - name: Prepare public files
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check JavaScript and election logic
+        run: |
+          node --check app.js
+          node scripts/check.cjs
+          python -m py_compile scripts/refresh.py scripts/portraits.py
+      - name: Prepare website
         run: |
           mkdir -p _site
           cp index.html style.css app.js .nojekyll _site/
           cp -r assets data _site/
+      - name: PR preview bundle
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: election-preview-pr-${{ github.event.pull_request.number }}
+          path: _site
+          include-hidden-files: true
+          retention-days: 14
+      - name: Preview instructions
+        if: github.event_name == 'pull_request'
+        run: |
+          echo '### PR tests passed' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download the election-preview artifact, unzip it, and serve with python -m http.server 8000. Production updates after merge to main.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
         with:
           path: _site
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
       - uses: actions/deploy-pages@v4
         id: deployment
